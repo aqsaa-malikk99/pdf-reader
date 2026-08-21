@@ -24,6 +24,8 @@ interface Props {
   currentUser: User;
   idToken?: string;
   shareId: string | null;
+  /** Called once a share link is created, so the host session starts syncing too. */
+  onShareCreated: (shareId: string) => void;
   onBack: () => void;
   onSignOut: () => void;
 }
@@ -36,6 +38,7 @@ export default function Viewer({
   currentUser,
   idToken,
   shareId,
+  onShareCreated,
   onBack,
   onSignOut,
 }: Props) {
@@ -248,6 +251,9 @@ export default function Viewer({
 
   async function handleShare(): Promise<string> {
     const record = await createShare(docName, bytesRef.current, annotations, idToken);
+    // Switch this session into shared mode too, so comments made by whoever
+    // opens the link sync back here — not just the other way around.
+    onShareCreated(record.id);
     return buildShareLink(record.id);
   }
 

@@ -1,13 +1,13 @@
 import { head, put } from '@vercel/blob';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { verifyRequestIdentity } from '../_auth';
+import { verifyRequestIdentity } from '../_auth.js';
 import {
   isValidShareId,
   mergeAnnotations,
   rejectsIdentitySpoofing,
   sendError,
   type StoredAnnotation,
-} from '../_shared';
+} from '../_shared.js';
 
 interface ShareData {
   docName: string;

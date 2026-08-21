@@ -1,7 +1,7 @@
 import { put } from '@vercel/blob';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { verifyRequestIdentity } from '../_auth';
-import { sendError } from '../_shared';
+import { verifyRequestIdentity } from '../_auth.js';
+import { sendError } from '../_shared.js';
 
 // Serverless request bodies are capped; keep uploads comfortably under it and
 // fail with a clear message rather than a generic platform error.

@@ -99,6 +99,10 @@ export default function App() {
     [],
   );
 
+  const handleShareCreated = useCallback((newShareId: string) => {
+    setDoc((current) => (current ? { ...current, shareId: newShareId } : current));
+  }, []);
+
   function goBack() {
     setDoc(null);
     setAnnotations([]);
@@ -141,6 +145,7 @@ export default function App() {
         currentUser={user}
         idToken={idToken}
         shareId={doc.shareId}
+        onShareCreated={handleShareCreated}
         onBack={goBack}
         onSignOut={handleSignOut}
       />
