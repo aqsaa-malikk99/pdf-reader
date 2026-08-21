@@ -421,6 +421,16 @@ textarea {
   white-space: nowrap;
 }
 
+.recent__badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #15803d;
+  background: #dcfce7;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 /* ---------------- Viewer ---------------- */
 .viewer {
   display: flex;

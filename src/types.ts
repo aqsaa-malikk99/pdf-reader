@@ -62,6 +62,8 @@ export interface DocumentRecord {
   name: string;
   bytes: ArrayBuffer;
   createdAt: number;
+  /** Set once this document has been shared, so re-sharing reuses the same link. */
+  shareId?: string;
 }
 
 export interface ShareRecord {

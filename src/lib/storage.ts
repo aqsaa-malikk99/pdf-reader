@@ -20,6 +20,12 @@ export async function loadDocument(id: string): Promise<DocumentRecord | undefin
   return get(docKey(id));
 }
 
+/** Records that a document has been shared, so re-sharing it reuses the same link. */
+export async function setDocumentShareId(id: string, shareId: string): Promise<void> {
+  const existing = await loadDocument(id);
+  if (existing) await saveDocument({ ...existing, shareId });
+}
+
 export async function saveAnnotations(docId: string, annotations: Annotation[]): Promise<void> {
   await set(annKey(docId), annotations);
 }
@@ -38,6 +44,7 @@ export interface RecentDoc {
   name: string;
   createdAt: number;
   annotationCount: number;
+  shareId?: string;
 }
 
 export async function listRecentDocuments(): Promise<RecentDoc[]> {
@@ -55,6 +62,7 @@ export async function listRecentDocuments(): Promise<RecentDoc[]> {
         name: doc.name,
         createdAt: doc.createdAt,
         annotationCount: annotations.filter((a) => !a.deleted).length,
+        ...(doc.shareId ? { shareId: doc.shareId } : {}),
       };
     }),
   );

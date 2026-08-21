@@ -101,6 +101,11 @@ export default function Home({ currentUser, onOpenFile, onOpenRecent, onSignOut 
                     📕
                   </span>
                   <span className="recent__name">{doc.name}</span>
+                  {doc.shareId && (
+                    <span className="recent__badge" title="This document is shared and syncs live">
+                      Shared
+                    </span>
+                  )}
                   <span className="recent__meta">
                     {doc.annotationCount > 0 &&
                       `${doc.annotationCount} comment${doc.annotationCount === 1 ? '' : 's'} · `}
