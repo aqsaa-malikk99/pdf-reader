@@ -1,72 +1,197 @@
-# PDF Commenter
+<div align="center">
 
-A PDF viewer you can highlight text and add comments in — fully offline for
-personal use, with an optional "Share" button to send a link to someone
-else (e.g. a supervisor) so they can view the same PDF and add their own
-comments back.
+# 📄 PDF Commenter
 
-## Running it locally
+**Read, highlight, and discuss PDFs — privately on your device, or together with a reviewer.**
+
+Built for the feedback loop between someone writing and someone reviewing:
+a student and a supervisor, a writer and an editor, a candidate and a hiring panel.
+
+[Getting started](#getting-started) · [Features](#features) · [Sharing](#sharing-a-document-for-review) · [Deployment](#deployment) · [Architecture](#architecture)
+
+</div>
+
+---
+
+## Why this exists
+
+Emailing `thesis_v4_FINAL_comments_JS.pdf` back and forth loses track of who said
+what, when. Most alternatives want you to upload your document to someone else's
+cloud before you can even read it.
+
+PDF Commenter opens your PDF **locally in the browser** — the file never leaves
+your machine until you explicitly choose to share it. When you do want feedback,
+one button produces a link. Your reviewer opens it, comments in place, and their
+notes flow back to you with names and timestamps attached.
+
+---
+
+## Features
+
+### Reading & annotating
+- **Real text selection** — select across words and lines the way you'd expect, then highlight.
+- **Highlights that stay legible** — rendered with multiply blending, so the ink reads as a solid marker instead of a washed-out film over the text.
+- **Comment pins** — drop a note anywhere on a page, not just on text.
+- **Eight-colour palette**, with your colour chosen for you (see below).
+- Zoom, page indicator, and `⌘ +` / `⌘ −` shortcuts.
+
+### Collaboration
+- **Automatic per-person colours** — every contributor in a document gets a *different* highlight colour automatically, so you can tell at a glance whose marks are whose. No one has to pick.
+- **Threaded replies** — reply to any comment to hold an actual conversation.
+- **Timestamps** — relative (`5m ago`) at a glance, exact on hover.
+- **Resolve / reopen** — tick off feedback you've addressed without deleting the history.
+- **Search & filter** — find any comment by text or author; filter to *Open* or *Mine*.
+- **Attribution you can trust** — with Google sign-in, identities are verified server-side.
+
+### Ownership & export
+- You can edit or delete **your own** comments; other people's are read-only to you.
+- **Export an annotated PDF** with highlights baked in and a full comments appendix — including replies and timestamps — readable in any PDF viewer.
+- **Works offline.** Documents and comments live in your browser's IndexedDB.
+
+---
+
+## Getting started
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open the printed `http://localhost:5173` URL. Everything here — opening a
-PDF, highlighting text, adding comments, exporting an annotated PDF — works
-fully offline. PDFs and comments are saved in your browser's local storage,
-so closing the tab and reopening the app later keeps your recent documents
-and comments.
+Open the printed URL (usually `http://localhost:5173`) and sign in.
 
-- **Highlight**: select any text in the PDF, pick a color, optionally add a
-  comment, and save.
-- **Comment pin**: click "Add Comment" in the toolbar, then click anywhere
-  on the page to drop a note that isn't tied to specific text.
-- **Edit / delete**: click a comment in the right-hand sidebar to edit it,
-  or the ✕ to delete it. Clicking a highlight or pin on the page jumps to
-  it in the sidebar.
-- **Export**: "Export PDF" downloads a copy of the PDF with your highlights
-  drawn in and a "Comments" page listing every note, so it can be opened in
-  any PDF reader.
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Start the dev server |
+| `npm run build` | Type-check and build for production |
+| `npm test` | Run the unit tests |
+| `npm run lint` | Lint the source |
 
-## Sharing with someone else (e.g. your supervisor)
+### Signing in
 
-The "Share" button uploads the PDF and comments to temporary cloud storage
-and gives you a link. Anyone who opens that link sees the same PDF and can
-add their own comments — additions from either side sync automatically
-(polls every ~8 seconds).
+You need an identity so comments can be attributed. Two ways:
 
-**This requires the app to be deployed somewhere public** (it won't work
-against `localhost`, since your supervisor can't reach your machine).
+- **Continue with a name** — works immediately, entirely offline, no account.
+- **Continue with Google** — appears once you've configured a client ID ([below](#enabling-google-sign-in)), and gives verified identity.
 
-### Deploying (free, via Vercel)
+---
 
-1. Create a free account at [vercel.com](https://vercel.com) if you don't
-   have one.
-2. From this project folder, run `npx vercel` and follow the prompts (or
-   connect the folder/repo from the Vercel dashboard). This gives you a
-   public URL like `https://pdf-commenter-yourname.vercel.app`.
-3. In the Vercel dashboard for the project, go to **Storage → Create
-   Database → Blob** and connect it to the project. This is what backs the
-   "temporary cloud storage" for shared PDFs and comments (free tier is
-   plenty for this use case) — Vercel wires up the required
-   `BLOB_READ_WRITE_TOKEN` environment variable automatically.
-4. Redeploy (`npx vercel --prod`) so the new environment variable takes
-   effect.
+## Sharing a document for review
 
-After that, open the deployed URL instead of `localhost` and the Share
-button will work end to end.
+1. Open your PDF and add any comments you want.
+2. Click **Share** → **Create share link**.
+3. Send the link to your reviewer (there's an *Open in email app* shortcut).
+4. They open it, sign in, and comment. Comments sync both ways every few seconds.
 
-**Note:** shared uploads are capped by the serverless request size limit
-(a few MB). For very large PDFs, use Export instead and send the file
-directly.
+> **Requires deployment.** Share links point at a running server, so this works
+> once the app is deployed — not against `localhost`, which your reviewer can't
+> reach. See [Deployment](#deployment).
 
-## Tech notes
+**Access model, stated plainly:** anyone holding a share link can read the
+document and add comments — the link *is* the credential, which is what makes it
+easy to send to someone without making them sign up. Google sign-in prevents
+someone from *posting under another signed-in person's name*, but it does not
+gate access. Don't share links to material you wouldn't want forwarded.
 
-- React + Vite + TypeScript.
-- PDF rendering/text selection via `pdfjs-dist`; exporting annotated PDFs
-  via `pdf-lib`.
-- Local persistence via IndexedDB (`idb-keyval`).
-- Sharing uses two small serverless functions in `api/share` backed by
-  Vercel Blob storage — no accounts or API keys needed beyond connecting
-  the free Blob store in step 3 above.
+**Size limit:** shared uploads are capped at ~4 MB by the serverless request
+limit. For larger PDFs, use **Export** and send the file directly.
+
+---
+
+## Deployment
+
+The app is a static front-end plus two small serverless functions, designed for
+Vercel's free tier.
+
+### 1. Deploy
+
+```bash
+npx vercel
+```
+
+Follow the prompts (or import the repo from the Vercel dashboard). You'll get a
+URL like `https://pdf-reader-yourname.vercel.app`.
+
+### 2. Add Blob storage
+
+Shared PDFs and comments are stored in Vercel Blob.
+
+In your project dashboard → **Storage** → **Create Database** → **Blob**, then
+connect it to the project. Vercel sets `BLOB_READ_WRITE_TOKEN` automatically.
+
+### 3. Enabling Google Sign-In
+
+Optional — skip it and the name-based sign-in is used instead.
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create an **OAuth 2.0 Client ID** of type *Web application*.
+2. Under **Authorised JavaScript origins**, add your deployed URL (and `http://localhost:5173` for local testing).
+3. Copy the client ID and set it as **two** environment variables in Vercel:
+
+   | Variable | Used by | Purpose |
+   | --- | --- | --- |
+   | `VITE_GOOGLE_CLIENT_ID` | Browser | Renders the Google button |
+   | `GOOGLE_CLIENT_ID` | Server | Verifies ID tokens |
+
+   Both take the same value. The server one is what makes attribution
+   trustworthy — without it, tokens aren't verified.
+
+4. Redeploy so the variables take effect:
+
+   ```bash
+   npx vercel --prod
+   ```
+
+For local development, create a `.env.local`:
+
+```bash
+VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+```
+
+---
+
+## Architecture
+
+```
+src/
+  components/     UI — Viewer, PdfPage, Sidebar, SignIn, AnnotationPopup
+  lib/
+    pdfjs.ts      PDF.js worker wiring
+    exportPdf.ts  Bakes highlights + comment appendix via pdf-lib
+    merge.ts      Conflict-free annotation merging  ← unit tested
+    colors.ts     Per-document colour assignment    ← unit tested
+    auth.ts       Session handling, Google Identity Services
+    storage.ts    IndexedDB persistence
+    migrate.ts    Forward-compatibility for older saved annotations
+api/
+  share/          Create + read/sync share records (Vercel Blob)
+  _auth.ts        Google ID token verification (jose)
+  _shared.ts      Server-side merge, mirroring lib/merge.ts
+```
+
+**Stack:** React · TypeScript · Vite · pdfjs-dist · pdf-lib · idb-keyval · Vercel Blob
+
+### How concurrent editing is handled
+
+Two people commenting at once is the normal case, so writes are reconciled
+**per annotation** rather than per document. Each annotation carries an
+`updatedAt`; on conflict the newer one wins, replies from both sides are unioned,
+and deletions are tombstones so they propagate instead of being resurrected by
+the next merge.
+
+The naive alternative — whoever saves last replaces the whole list — silently
+destroys the other person's comments. The merge logic is unit-tested against
+exactly that scenario.
+
+---
+
+## Privacy
+
+- PDFs opened locally stay in your browser (IndexedDB) and are never uploaded.
+- Nothing is transmitted until you press **Share**.
+- Shared documents live in your own Vercel Blob store, under your account.
+- Guest sign-in stores only the name you type, in your browser.
+
+---
+
+## Licence
+
+MIT

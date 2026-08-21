@@ -1,16 +1,18 @@
 import { useLayoutEffect, useRef, useState } from 'react';
+import { HIGHLIGHT_COLORS } from '../lib/colors';
 
-const COLORS = ['#ffe066', '#a3e6a1', '#a3c9f9', '#f6a3c9', '#f9c99a'];
 const MARGIN = 12;
 
 interface Props {
   x: number;
   y: number;
-  initialColor?: string;
+  /** Defaults to the signed-in user's automatically assigned colour. */
+  initialColor: string;
   onSave: (color: string, comment: string) => void;
   onCancel: () => void;
   onColorChange?: (color: string) => void;
   placeholder?: string;
+  requireComment?: boolean;
 }
 
 export default function AnnotationPopup({
@@ -21,8 +23,9 @@ export default function AnnotationPopup({
   onCancel,
   onColorChange,
   placeholder = 'Add a comment (optional)…',
+  requireComment = false,
 }: Props) {
-  const [color, setColor] = useState(initialColor ?? COLORS[0]);
+  const [color, setColor] = useState(initialColor);
   const [comment, setComment] = useState('');
   const popupRef = useRef<HTMLDivElement | null>(null);
   // Start at opacity 0 (not visibility:hidden — a hidden element can't take
@@ -34,10 +37,9 @@ export default function AnnotationPopup({
     opacity: 0,
   });
 
-  // The popup's height depends on content (wrapped placeholder text, etc.), so
-  // measure it after it first paints and clamp it fully inside the viewport —
-  // otherwise a highlight made low on the page opens a popup whose textarea
-  // (and Save button) render below the visible window, out of reach.
+  // The popup's height depends on content, so measure it after it first paints
+  // and clamp it fully inside the viewport — otherwise a highlight made low on
+  // the page opens a popup whose textarea renders below the visible window.
   useLayoutEffect(() => {
     const el = popupRef.current;
     if (!el) return;
@@ -53,13 +55,14 @@ export default function AnnotationPopup({
     top = Math.min(Math.max(top, MARGIN), window.innerHeight - rect.height - MARGIN);
 
     setStyle({ left, top, opacity: 1 });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [x, y]);
 
   function chooseColor(c: string) {
     setColor(c);
     onColorChange?.(c);
   }
+
+  const canSave = !requireComment || comment.trim().length > 0;
 
   return (
     <div
@@ -69,13 +72,14 @@ export default function AnnotationPopup({
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div className="annotation-popup__colors">
-        {COLORS.map((c) => (
+        {HIGHLIGHT_COLORS.map((c) => (
           <button
             key={c}
+            type="button"
             className={`color-swatch ${c === color ? 'color-swatch--active' : ''}`}
             style={{ background: c }}
             onClick={() => chooseColor(c)}
-            aria-label={`Choose color ${c}`}
+            aria-label={`Use colour ${c}`}
           />
         ))}
       </div>
@@ -86,17 +90,23 @@ export default function AnnotationPopup({
         value={comment}
         onChange={(e) => setComment(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && canSave) {
             onSave(color, comment.trim());
           }
           if (e.key === 'Escape') onCancel();
         }}
       />
       <div className="annotation-popup__actions">
-        <button className="btn btn--ghost" onClick={onCancel}>
+        <span className="annotation-popup__hint">⌘↵ to save</span>
+        <button type="button" className="btn btn--ghost btn--sm" onClick={onCancel}>
           Cancel
         </button>
-        <button className="btn btn--primary" onClick={() => onSave(color, comment.trim())}>
+        <button
+          type="button"
+          className="btn btn--primary btn--sm"
+          disabled={!canSave}
+          onClick={() => onSave(color, comment.trim())}
+        >
           Save
         </button>
       </div>

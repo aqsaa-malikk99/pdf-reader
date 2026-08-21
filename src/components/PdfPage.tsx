@@ -4,8 +4,6 @@ import { TextLayer } from '../lib/pdfjs';
 import type { Annotation, NormRect } from '../types';
 import AnnotationPopup from './AnnotationPopup';
 
-const DEFAULT_COLOR = '#ffe066';
-
 interface PendingHighlight {
   screenX: number;
   screenY: number;
@@ -26,6 +24,8 @@ interface Props {
   scale: number;
   annotations: Annotation[];
   noteMode: boolean;
+  /** The signed-in user's automatically assigned highlight colour. */
+  userColor: string;
   registerContainer: (page: number, el: HTMLDivElement | null) => void;
   onCreateHighlight: (page: number, rects: NormRect[], quotedText: string, color: string, comment: string) => void;
   onCreateNote: (page: number, x: number, y: number, color: string, comment: string) => void;
@@ -39,6 +39,7 @@ export default function PdfPage({
   scale,
   annotations,
   noteMode,
+  userColor,
   registerContainer,
   onCreateHighlight,
   onCreateNote,
@@ -50,7 +51,7 @@ export default function PdfPage({
   const textLayerRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [pending, setPending] = useState<PendingHighlight | PendingNote | null>(null);
-  const [previewColor, setPreviewColor] = useState(DEFAULT_COLOR);
+  const [previewColor, setPreviewColor] = useState(userColor);
   const renderTaskRef = useRef<{ cancel: () => void } | null>(null);
 
   useEffect(() => {
@@ -133,7 +134,7 @@ export default function PdfPage({
           w: r.width / containerRect.width,
           h: r.height / containerRect.height,
         }));
-        setPreviewColor(DEFAULT_COLOR);
+        setPreviewColor(userColor);
         setPending({ screenX: clientX, screenY: clientY, rects, quotedText: text });
         selection.removeAllRanges();
         return;
@@ -155,6 +156,7 @@ export default function PdfPage({
     }
 
     if (noteMode) {
+      setPreviewColor(userColor);
       setPending({ screenX: clientX, screenY: clientY, x: px, y: py });
     }
   }
@@ -233,7 +235,13 @@ export default function PdfPage({
           a.rects!.map((r, i) => (
             <div
               key={`${a.id}-${i}`}
-              className={`highlight-rect ${activeAnnotationId === a.id ? 'highlight-rect--active' : ''}`}
+              className={[
+                'highlight-rect',
+                activeAnnotationId === a.id ? 'highlight-rect--active' : '',
+                a.resolved ? 'highlight-rect--resolved' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
               style={{
                 left: `${r.x * 100}%`,
                 top: `${r.y * 100}%`,
@@ -241,19 +249,25 @@ export default function PdfPage({
                 height: `${r.h * 100}%`,
                 background: a.color,
               }}
-              title={a.comment || a.quotedText}
+              title={`${a.author.name}${a.comment ? `: ${a.comment}` : ''}`}
             />
           )),
         )}
         {notes.map((a) => (
           <button
             key={a.id}
-            className={`note-pin ${activeAnnotationId === a.id ? 'note-pin--active' : ''}`}
+            className={[
+              'note-pin',
+              activeAnnotationId === a.id ? 'note-pin--active' : '',
+              a.resolved ? 'note-pin--resolved' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
             style={{ left: `${(a.x ?? 0) * 100}%`, top: `${(a.y ?? 0) * 100}%`, background: a.color }}
             onClick={() => onSelectAnnotation(a.id)}
-            title={a.comment}
+            title={`${a.author.name}: ${a.comment}`}
           >
-            💬
+            {a.replies.length > 0 ? a.replies.length + 1 : '💬'}
           </button>
         ))}
         {pending && 'rects' in pending &&
@@ -290,8 +304,11 @@ export default function PdfPage({
         <AnnotationPopup
           x={pending.screenX}
           y={pending.screenY}
+          initialColor={previewColor}
           placeholder="Write your comment…"
+          requireComment
           onCancel={() => setPending(null)}
+          onColorChange={setPreviewColor}
           onSave={(color, comment) => {
             if (comment) {
               onCreateNote(pageNumber, pending.x, pending.y, color, comment);

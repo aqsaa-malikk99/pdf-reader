@@ -1,17 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Home from './components/Home';
 import Viewer from './components/Viewer';
+import SignIn from './components/SignIn';
 import {
   hashBytes,
   loadDocument,
   saveDocument,
   loadAnnotations,
   saveAnnotations,
-  getUserName,
-  setUserName,
 } from './lib/storage';
+import { clearSession, loadSession, saveSession } from './lib/auth';
 import { fetchShare, parseShareIdFromHash } from './lib/share';
-import type { Annotation } from './types';
+import type { Annotation, User } from './types';
 
 interface OpenDoc {
   id: string;
@@ -21,72 +21,100 @@ interface OpenDoc {
 }
 
 export default function App() {
+  const stored = loadSession();
+  const [user, setUser] = useState<User | null>(stored?.user ?? null);
+  const [idToken, setIdToken] = useState<string | undefined>(stored?.idToken);
+
   const [doc, setDoc] = useState<OpenDoc | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [userName, setUserNameState] = useState(getUserName());
+  const [pendingShareId, setPendingShareId] = useState<string | null>(() =>
+    parseShareIdFromHash(window.location.hash),
+  );
   const [loadingShared, setLoadingShared] = useState(false);
   const [sharedError, setSharedError] = useState('');
 
+  // Open a shared link once the person has an identity — a shared document is
+  // collaborative, so we need to know who to attribute comments to first.
   useEffect(() => {
-    const shareId = parseShareIdFromHash(window.location.hash);
-    if (!shareId) return;
+    if (!pendingShareId || !user || doc) return;
     setLoadingShared(true);
+    setSharedError('');
     (async () => {
       try {
-        const record = await fetchShare(shareId);
-        const pdfResp = await fetch(record.pdfUrl);
-        const bytes = await pdfResp.arrayBuffer();
+        const record = await fetchShare(pendingShareId);
+        const pdfResponse = await fetch(record.pdfUrl);
+        if (!pdfResponse.ok) throw new Error('The shared PDF could not be downloaded.');
+        const bytes = await pdfResponse.arrayBuffer();
         const id = await hashBytes(bytes);
-        setDoc({ id, name: record.docName, bytes, shareId });
+        setDoc({ id, name: record.docName, bytes, shareId: pendingShareId });
         setAnnotations(record.annotations);
       } catch (err) {
-        setSharedError(err instanceof Error ? err.message : 'Failed to load shared document');
+        setSharedError(err instanceof Error ? err.message : 'Failed to load shared document.');
       } finally {
         setLoadingShared(false);
       }
     })();
-  }, []);
+  }, [pendingShareId, user, doc]);
+
+  function handleSignedIn(nextUser: User, token?: string) {
+    setUser(nextUser);
+    setIdToken(token);
+    saveSession({ user: nextUser, idToken: token });
+  }
+
+  function handleSignOut() {
+    clearSession();
+    setUser(null);
+    setIdToken(undefined);
+    setDoc(null);
+    setAnnotations([]);
+  }
 
   async function openFile(file: File) {
     const bytes = await file.arrayBuffer();
     const id = await hashBytes(bytes);
-    const existing = await loadDocument(id);
-    if (!existing) {
+    if (!(await loadDocument(id))) {
       await saveDocument({ id, name: file.name, bytes, createdAt: Date.now() });
     }
-    const anns = await loadAnnotations(id);
     setDoc({ id, name: file.name, bytes, shareId: null });
-    setAnnotations(anns);
+    setAnnotations(await loadAnnotations(id));
   }
 
   async function openRecent(id: string) {
     const record = await loadDocument(id);
     if (!record) return;
-    const anns = await loadAnnotations(id);
     setDoc({ id, name: record.name, bytes: record.bytes, shareId: null });
-    setAnnotations(anns);
+    setAnnotations(await loadAnnotations(id));
   }
 
-  function handleAnnotationsChange(next: Annotation[]) {
-    setAnnotations(next);
-    if (doc && !doc.shareId) {
-      saveAnnotations(doc.id, next);
-    }
-  }
-
-  function handleUserNameChange(name: string) {
-    setUserNameState(name);
-    setUserName(name);
-  }
+  const handleAnnotationsChange = useCallback(
+    (next: Annotation[]) => {
+      setAnnotations(next);
+      setDoc((current) => {
+        // Local documents persist to IndexedDB; shared ones live on the server.
+        if (current && !current.shareId) void saveAnnotations(current.id, next);
+        return current;
+      });
+    },
+    [],
+  );
 
   function goBack() {
     setDoc(null);
+    setAnnotations([]);
+    setPendingShareId(null);
+    setSharedError('');
     window.history.replaceState(null, '', window.location.pathname);
+  }
+
+  if (!user) {
+    return <SignIn onSignedIn={handleSignedIn} />;
   }
 
   if (loadingShared) {
     return (
       <div className="centered-message">
+        <div className="spinner" aria-hidden="true" />
         <p>Loading shared document…</p>
       </div>
     );
@@ -95,9 +123,9 @@ export default function App() {
   if (sharedError) {
     return (
       <div className="centered-message">
-        <p>{sharedError}</p>
+        <p className="centered-message__error">{sharedError}</p>
         <button className="btn btn--primary" onClick={goBack}>
-          Go to home
+          Go to my library
         </button>
       </div>
     );
@@ -110,13 +138,21 @@ export default function App() {
         docName={doc.name}
         annotations={annotations}
         onAnnotationsChange={handleAnnotationsChange}
-        userName={userName}
-        onUserNameChange={handleUserNameChange}
+        currentUser={user}
+        idToken={idToken}
         shareId={doc.shareId}
         onBack={goBack}
+        onSignOut={handleSignOut}
       />
     );
   }
 
-  return <Home onOpenFile={openFile} onOpenRecent={openRecent} />;
+  return (
+    <Home
+      currentUser={user}
+      onOpenFile={openFile}
+      onOpenRecent={openRecent}
+      onSignOut={handleSignOut}
+    />
+  );
 }

@@ -1,23 +1,31 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { getDocument } from '../lib/pdfjs';
 import { exportAnnotatedPdf } from '../lib/exportPdf';
-import { createShare, fetchShare, updateShareAnnotations, buildShareLink } from '../lib/share';
-import type { Annotation, NormRect } from '../types';
+import { createShare, fetchShare, syncShareAnnotations, buildShareLink } from '../lib/share';
+import { mergeAnnotations, visibleAnnotations } from '../lib/merge';
+import { colorForUserInDocument } from '../lib/colors';
+import { toAuthorRef } from '../lib/auth';
+import type { Annotation, NormRect, User } from '../types';
 import PdfPage from './PdfPage';
 import Sidebar from './Sidebar';
 import ShareDialog from './ShareDialog';
+import Avatar from './Avatar';
+
+const POLL_INTERVAL_MS = 8000;
+
+type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error';
 
 interface Props {
   pdfBytes: ArrayBuffer;
   docName: string;
   annotations: Annotation[];
   onAnnotationsChange: (annotations: Annotation[]) => void;
-  userName: string;
-  onUserNameChange: (name: string) => void;
+  currentUser: User;
+  idToken?: string;
   shareId: string | null;
   onBack: () => void;
-  readOnly?: boolean;
+  onSignOut: () => void;
 }
 
 export default function Viewer({
@@ -25,70 +33,102 @@ export default function Viewer({
   docName,
   annotations,
   onAnnotationsChange,
-  userName,
-  onUserNameChange,
+  currentUser,
+  idToken,
   shareId,
   onBack,
+  onSignOut,
 }: Props) {
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
+  const [loadError, setLoadError] = useState('');
   const [scale, setScale] = useState(1.2);
   const [noteMode, setNoteMode] = useState(false);
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
+  const [exporting, setExporting] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+
   const pageContainers = useRef<Map<number, HTMLDivElement>>(new Map());
   const bytesRef = useRef(pdfBytes);
   bytesRef.current = pdfBytes;
+  const annotationsRef = useRef(annotations);
+  annotationsRef.current = annotations;
+
+  const shown = useMemo(() => visibleAnnotations(annotations), [annotations]);
+  // Recomputed as participants join, so each contributor keeps a distinct colour.
+  const userColor = useMemo(
+    () => colorForUserInDocument(currentUser.id, shown),
+    [currentUser.id, shown],
+  );
 
   useEffect(() => {
     let cancelled = false;
+    setLoadError('');
     (async () => {
-      const doc = await getDocument({ data: pdfBytes.slice(0) }).promise;
-      if (!cancelled) setPdf(doc);
+      try {
+        const doc = await getDocument({ data: pdfBytes.slice(0) }).promise;
+        if (!cancelled) setPdf(doc);
+      } catch {
+        if (!cancelled) setLoadError('This file could not be opened as a PDF.');
+      }
     })();
     return () => {
       cancelled = true;
     };
   }, [pdfBytes]);
 
-  // Poll for updates from collaborators when viewing a shared document.
+  // Poll for collaborators' changes, merging rather than replacing so local
+  // edits made since the last sync are never dropped.
   useEffect(() => {
     if (!shareId) return;
     const interval = setInterval(async () => {
       try {
         const record = await fetchShare(shareId);
-        onAnnotationsChange(record.annotations);
+        const merged = mergeAnnotations(annotationsRef.current, record.annotations);
+        onAnnotationsChange(merged);
       } catch {
-        // ignore transient poll failures
+        // Transient poll failures are non-fatal; the next tick retries.
       }
-    }, 8000);
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [shareId, onAnnotationsChange]);
 
-  const pageNumbers = useMemo(
-    () => (pdf ? Array.from({ length: pdf.numPages }, (_, i) => i + 1) : []),
-    [pdf],
-  );
+  // Track which page is centred, for the page indicator.
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (visible) {
+          const page = Number((visible.target as HTMLElement).dataset.page);
+          if (page) setCurrentPage(page);
+        }
+      },
+      { threshold: [0.25, 0.5, 0.75] },
+    );
+    pageContainers.current.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [pdf]);
 
-  function ensureName(): string {
-    if (userName) return userName;
-    const name = window.prompt('Your name (shown next to your comments):', '') ?? '';
-    if (name) onUserNameChange(name);
-    return name;
-  }
-
-  async function persist(next: Annotation[]) {
-    onAnnotationsChange(next);
-    if (shareId) {
+  const persist = useCallback(
+    async (next: Annotation[]) => {
+      onAnnotationsChange(next);
+      if (!shareId) return;
       setSyncStatus('syncing');
       try {
-        await updateShareAnnotations(shareId, next);
+        const record = await syncShareAnnotations(shareId, next, idToken);
+        // Fold the server's merged view back in, picking up anything a
+        // collaborator saved between our last poll and this write.
+        onAnnotationsChange(mergeAnnotations(next, record.annotations));
         setSyncStatus('synced');
       } catch {
         setSyncStatus('error');
       }
-    }
-  }
+    },
+    [shareId, idToken, onAnnotationsChange],
+  );
 
   function createHighlight(
     page: number,
@@ -97,76 +137,149 @@ export default function Viewer({
     color: string,
     comment: string,
   ) {
-    const author = ensureName();
-    const ann: Annotation = {
-      id: crypto.randomUUID(),
-      type: 'highlight',
-      page,
-      color,
-      rects,
-      quotedText,
-      comment,
-      author,
-      createdAt: Date.now(),
-    };
-    persist([...annotations, ann]);
+    const now = Date.now();
+    persist([
+      ...annotations,
+      {
+        id: crypto.randomUUID(),
+        type: 'highlight',
+        page,
+        color,
+        rects,
+        quotedText,
+        comment,
+        author: toAuthorRef(currentUser),
+        replies: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
   }
 
   function createNote(page: number, x: number, y: number, color: string, comment: string) {
-    const author = ensureName();
-    const ann: Annotation = {
-      id: crypto.randomUUID(),
-      type: 'note',
-      page,
-      color,
-      x,
-      y,
-      comment,
-      author,
-      createdAt: Date.now(),
-    };
-    persist([...annotations, ann]);
+    const now = Date.now();
+    persist([
+      ...annotations,
+      {
+        id: crypto.randomUUID(),
+        type: 'note',
+        page,
+        color,
+        x,
+        y,
+        comment,
+        author: toAuthorRef(currentUser),
+        replies: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
     setNoteMode(false);
   }
 
-  function deleteAnnotation(id: string) {
-    persist(annotations.filter((a) => a.id !== id));
+  function updateAnnotation(id: string, patch: Partial<Annotation>) {
+    persist(
+      annotations.map((a) => (a.id === id ? { ...a, ...patch, updatedAt: Date.now() } : a)),
+    );
   }
 
-  function editAnnotation(id: string, comment: string) {
-    persist(annotations.map((a) => (a.id === id ? { ...a, comment } : a)));
+  /** Soft-delete, so the removal syncs instead of being resurrected by a merge. */
+  function deleteAnnotation(id: string) {
+    updateAnnotation(id, { deleted: true });
+    if (activeAnnotationId === id) setActiveAnnotationId(null);
+  }
+
+  function addReply(id: string, text: string) {
+    const annotation = annotations.find((a) => a.id === id);
+    if (!annotation) return;
+    updateAnnotation(id, {
+      replies: [
+        ...annotation.replies,
+        {
+          id: crypto.randomUUID(),
+          author: toAuthorRef(currentUser),
+          text,
+          createdAt: Date.now(),
+        },
+      ],
+    });
+  }
+
+  function deleteReply(annotationId: string, replyId: string) {
+    const annotation = annotations.find((a) => a.id === annotationId);
+    if (!annotation) return;
+    updateAnnotation(annotationId, {
+      replies: annotation.replies.filter((r) => r.id !== replyId),
+    });
+  }
+
+  function toggleResolved(id: string) {
+    const annotation = annotations.find((a) => a.id === id);
+    if (!annotation) return;
+    updateAnnotation(id, { resolved: !annotation.resolved || undefined });
   }
 
   function selectAnnotation(id: string | null) {
     setActiveAnnotationId(id);
     if (!id) return;
-    const ann = annotations.find((a) => a.id === id);
-    if (!ann) return;
-    const el = pageContainers.current.get(ann.page);
-    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const annotation = annotations.find((a) => a.id === id);
+    if (!annotation) return;
+    pageContainers.current.get(annotation.page)?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center',
+    });
   }
 
   async function handleExport() {
-    const bytes = await exportAnnotatedPdf(bytesRef.current, annotations);
-    const blob = new Blob([bytes as BlobPart], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = docName.replace(/\.pdf$/i, '') + '-annotated.pdf';
-    a.click();
-    URL.revokeObjectURL(url);
+    setExporting(true);
+    try {
+      const bytes = await exportAnnotatedPdf(bytesRef.current, shown);
+      const blob = new Blob([bytes as BlobPart], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${docName.replace(/\.pdf$/i, '')}-annotated.pdf`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
   }
 
   async function handleShare(): Promise<string> {
-    const record = await createShare(docName, bytesRef.current, annotations);
+    const record = await createShare(docName, bytesRef.current, annotations, idToken);
     return buildShareLink(record.id);
   }
 
+  // Zoom shortcuts, ignored while typing so they don't hijack the comment box.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement;
+      if (target.matches('input, textarea')) return;
+      if ((e.metaKey || e.ctrlKey) && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        setScale((s) => Math.min(3, s + 0.1));
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === '-') {
+        e.preventDefault();
+        setScale((s) => Math.max(0.5, s - 0.1));
+      }
+      if (e.key === 'Escape') setNoteMode(false);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const pageNumbers = useMemo(
+    () => (pdf ? Array.from({ length: pdf.numPages }, (_, i) => i + 1) : []),
+    [pdf],
+  );
+
   return (
     <div className="viewer">
-      <div className="toolbar">
-        <button className="btn btn--ghost" onClick={onBack}>
-          ← Back
+      <header className="toolbar">
+        <button className="btn btn--ghost btn--sm" onClick={onBack}>
+          ← Library
         </button>
         <span className="toolbar__title" title={docName}>
           {docName}
@@ -174,49 +287,83 @@ export default function Viewer({
         {shareId && (
           <span className={`sync-badge sync-badge--${syncStatus}`}>
             {syncStatus === 'syncing' && 'Syncing…'}
-            {syncStatus === 'synced' && 'Synced'}
-            {syncStatus === 'error' && 'Sync failed'}
+            {syncStatus === 'synced' && '✓ Synced'}
+            {syncStatus === 'error' && '⚠ Sync failed'}
             {syncStatus === 'idle' && 'Shared'}
           </span>
         )}
+
         <div className="toolbar__spacer" />
-        <button className="btn btn--ghost" onClick={() => setScale((s) => Math.max(0.5, s - 0.1))}>
-          −
-        </button>
-        <span className="toolbar__zoom">{Math.round(scale * 100)}%</span>
-        <button className="btn btn--ghost" onClick={() => setScale((s) => Math.min(3, s + 0.1))}>
-          +
-        </button>
+
+        <div className="toolbar__group">
+          <button
+            className="btn btn--ghost btn--sm"
+            onClick={() => setScale((s) => Math.max(0.5, s - 0.1))}
+            aria-label="Zoom out"
+          >
+            −
+          </button>
+          <span className="toolbar__zoom">{Math.round(scale * 100)}%</span>
+          <button
+            className="btn btn--ghost btn--sm"
+            onClick={() => setScale((s) => Math.min(3, s + 0.1))}
+            aria-label="Zoom in"
+          >
+            +
+          </button>
+        </div>
+
+        {pdf && (
+          <span className="toolbar__pages">
+            Page {currentPage} / {pdf.numPages}
+          </span>
+        )}
+
         <button
-          className={`btn ${noteMode ? 'btn--primary' : 'btn--ghost'}`}
+          className={`btn btn--sm ${noteMode ? 'btn--primary' : 'btn--ghost'}`}
           onClick={() => setNoteMode((v) => !v)}
+          title="Click anywhere on the page to leave a comment"
         >
-          💬 Add Comment
+          💬 {noteMode ? 'Click a spot…' : 'Add Comment'}
         </button>
-        <button className="btn btn--ghost" onClick={handleExport}>
-          ⬇ Export PDF
+        <button className="btn btn--ghost btn--sm" onClick={handleExport} disabled={exporting}>
+          {exporting ? 'Exporting…' : '⬇ Export'}
         </button>
         {!shareId && (
-          <button className="btn btn--primary" onClick={() => setShareOpen(true)}>
+          <button className="btn btn--primary btn--sm" onClick={() => setShareOpen(true)}>
             Share
           </button>
         )}
-      </div>
+
+        <div className="toolbar__user" title={currentUser.email ?? currentUser.name}>
+          <Avatar author={toAuthorRef(currentUser)} size={28} />
+          <button className="link-btn" onClick={onSignOut}>
+            Sign out
+          </button>
+        </div>
+      </header>
 
       <div className="viewer__body">
-        <div className="viewer__pages">
-          {pdf ? (
+        <div className={`viewer__pages ${noteMode ? 'viewer__pages--note-mode' : ''}`}>
+          {loadError ? (
+            <p className="viewer__error">{loadError}</p>
+          ) : pdf ? (
             pageNumbers.map((n) => (
               <PdfPage
                 key={n}
                 pdf={pdf}
                 pageNumber={n}
                 scale={scale}
-                annotations={annotations.filter((a) => a.page === n)}
+                annotations={shown.filter((a) => a.page === n)}
                 noteMode={noteMode}
+                userColor={userColor}
                 registerContainer={(page, el) => {
-                  if (el) pageContainers.current.set(page, el);
-                  else pageContainers.current.delete(page);
+                  if (el) {
+                    el.dataset.page = String(page);
+                    pageContainers.current.set(page, el);
+                  } else {
+                    pageContainers.current.delete(page);
+                  }
                 }}
                 onCreateHighlight={createHighlight}
                 onCreateNote={createNote}
@@ -228,12 +375,17 @@ export default function Viewer({
             <p className="viewer__loading">Loading PDF…</p>
           )}
         </div>
+
         <Sidebar
-          annotations={annotations}
+          annotations={shown}
+          currentUser={currentUser}
           activeAnnotationId={activeAnnotationId}
           onSelect={selectAnnotation}
           onDelete={deleteAnnotation}
-          onEdit={editAnnotation}
+          onEditComment={(id, comment) => updateAnnotation(id, { comment, editedAt: Date.now() })}
+          onToggleResolved={toggleResolved}
+          onReply={addReply}
+          onDeleteReply={deleteReply}
         />
       </div>
 

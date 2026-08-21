@@ -1,5 +1,6 @@
 import { get, set, del, keys } from 'idb-keyval';
 import type { Annotation, DocumentRecord } from '../types';
+import { normalizeAnnotations } from './migrate';
 
 export async function hashBytes(bytes: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -24,7 +25,7 @@ export async function saveAnnotations(docId: string, annotations: Annotation[]):
 }
 
 export async function loadAnnotations(docId: string): Promise<Annotation[]> {
-  return (await get(annKey(docId))) ?? [];
+  return normalizeAnnotations(await get(annKey(docId)));
 }
 
 export async function deleteDocument(id: string): Promise<void> {
@@ -36,6 +37,7 @@ export interface RecentDoc {
   id: string;
   name: string;
   createdAt: number;
+  annotationCount: number;
 }
 
 export async function listRecentDocuments(): Promise<RecentDoc[]> {
@@ -43,17 +45,21 @@ export async function listRecentDocuments(): Promise<RecentDoc[]> {
   const docIds = allKeys
     .filter((k): k is string => typeof k === 'string' && k.startsWith('doc:'))
     .map((k) => k.slice(4));
-  const records = await Promise.all(docIds.map((id) => loadDocument(id)));
+
+  const records = await Promise.all(
+    docIds.map(async (id) => {
+      const [doc, annotations] = await Promise.all([loadDocument(id), loadAnnotations(id)]);
+      if (!doc) return null;
+      return {
+        id: doc.id,
+        name: doc.name,
+        createdAt: doc.createdAt,
+        annotationCount: annotations.filter((a) => !a.deleted).length,
+      };
+    }),
+  );
+
   return records
-    .filter((r): r is DocumentRecord => !!r)
-    .map((r) => ({ id: r.id, name: r.name, createdAt: r.createdAt }))
+    .filter((r): r is RecentDoc => r !== null)
     .sort((a, b) => b.createdAt - a.createdAt);
-}
-
-export function getUserName(): string {
-  return localStorage.getItem('pdf-commenter:username') ?? '';
-}
-
-export function setUserName(name: string): void {
-  localStorage.setItem('pdf-commenter:username', name);
 }

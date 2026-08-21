@@ -1,29 +1,41 @@
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { BlendMode, PDFDocument, PDFFont, rgb, StandardFonts } from 'pdf-lib';
 import type { Annotation } from '../types';
 
 function hexToRgb01(hex: string): { r: number; g: number; b: number } {
   const clean = hex.replace('#', '');
-  const r = parseInt(clean.substring(0, 2), 16) / 255;
-  const g = parseInt(clean.substring(2, 4), 16) / 255;
-  const b = parseInt(clean.substring(4, 6), 16) / 255;
-  return { r, g, b };
+  return {
+    r: parseInt(clean.slice(0, 2), 16) / 255,
+    g: parseInt(clean.slice(2, 4), 16) / 255,
+    b: parseInt(clean.slice(4, 6), 16) / 255,
+  };
 }
 
-function wrapText(text: string, font: any, size: number, maxWidth: number): string[] {
-  const words = text.split(/\s+/);
+function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
   const lines: string[] = [];
-  let current = '';
-  for (const word of words) {
-    const candidate = current ? `${current} ${word}` : word;
-    if (font.widthOfTextAtSize(candidate, size) > maxWidth && current) {
-      lines.push(current);
-      current = word;
-    } else {
-      current = candidate;
+  for (const paragraph of text.split('\n')) {
+    let current = '';
+    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (font.widthOfTextAtSize(candidate, size) > maxWidth && current) {
+        lines.push(current);
+        current = word;
+      } else {
+        current = candidate;
+      }
     }
+    lines.push(current);
   }
-  if (current) lines.push(current);
   return lines;
+}
+
+/** pdf-lib's WinAnsi fonts reject characters like smart quotes and emoji. */
+function sanitize(text: string): string {
+  return text
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, '-')
+    .replace(/…/g, '...')
+    .replace(/[^\x20-\x7E\n]/g, '');
 }
 
 export async function exportAnnotatedPdf(
@@ -33,149 +45,163 @@ export async function exportAnnotatedPdf(
   const pdfDoc = await PDFDocument.load(originalBytes);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const italic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
   const pages = pdfDoc.getPages();
 
-  const byPage = new Map<number, Annotation[]>();
-  for (const ann of annotations) {
-    if (!byPage.has(ann.page)) byPage.set(ann.page, []);
-    byPage.get(ann.page)!.push(ann);
-  }
+  const live = annotations.filter((a) => !a.deleted);
+  const ordered = [...live].sort((a, b) => a.page - b.page || a.createdAt - b.createdAt);
 
-  let noteNumber = 0;
-  const noteEntries: { number: number; ann: Annotation }[] = [];
+  const numbered = ordered.filter((a) => a.comment || a.replies.length > 0);
+  const numberOf = new Map(numbered.map((a, i) => [a.id, i + 1]));
 
-  for (const [pageNum, anns] of byPage) {
-    const page = pages[pageNum - 1];
+  for (const annotation of ordered) {
+    const page = pages[annotation.page - 1];
     if (!page) continue;
     const { width, height } = page.getSize();
+    const { r, g, b } = hexToRgb01(annotation.color);
 
-    for (const ann of anns) {
-      const { r, g, b } = hexToRgb01(ann.color);
-
-      if (ann.type === 'highlight' && ann.rects) {
-        for (const rect of ann.rects) {
-          page.drawRectangle({
-            x: rect.x * width,
-            y: height - (rect.y + rect.h) * height,
-            width: rect.w * width,
-            height: rect.h * height,
-            color: rgb(r, g, b),
-            opacity: 0.35,
-          });
-        }
-      }
-
-      if (ann.comment) {
-        noteNumber += 1;
-        noteEntries.push({ number: noteNumber, ann });
-
-        let markerX: number;
-        let markerY: number;
-        if (ann.type === 'note' && ann.x !== undefined && ann.y !== undefined) {
-          markerX = ann.x * width;
-          markerY = height - ann.y * height;
-        } else if (ann.rects && ann.rects.length > 0) {
-          const first = ann.rects[0];
-          markerX = first.x * width;
-          markerY = height - first.y * height;
-        } else {
-          continue;
-        }
-
-        const radius = 8;
-        page.drawCircle({
-          x: markerX,
-          y: markerY,
-          size: radius,
+    if (annotation.type === 'highlight' && annotation.rects) {
+      for (const rect of annotation.rects) {
+        page.drawRectangle({
+          x: rect.x * width,
+          y: height - (rect.y + rect.h) * height,
+          width: rect.w * width,
+          height: rect.h * height,
           color: rgb(r, g, b),
-          borderColor: rgb(0.2, 0.2, 0.2),
-          borderWidth: 0.75,
-        });
-        page.drawText(String(noteNumber), {
-          x: markerX - (noteNumber > 9 ? 5 : 3),
-          y: markerY - 3.5,
-          size: 8,
-          font: bold,
-          color: rgb(1, 1, 1),
+          // Multiply keeps the underlying text crisp instead of veiling it,
+          // matching how highlights look in the viewer.
+          blendMode: BlendMode.Multiply,
         });
       }
     }
-  }
 
-  if (noteEntries.length > 0) {
-    let notesPage = pdfDoc.addPage();
-    let { width: pw, height: ph } = notesPage.getSize();
-    let cursorY = ph - 50;
-    const margin = 50;
-    const maxWidth = pw - margin * 2;
+    const marker = numberOf.get(annotation.id);
+    if (!marker) continue;
 
-    notesPage.drawText('Comments', {
-      x: margin,
-      y: cursorY,
-      size: 18,
+    let markerX: number;
+    let markerY: number;
+    if (annotation.type === 'note' && annotation.x !== undefined && annotation.y !== undefined) {
+      markerX = annotation.x * width;
+      markerY = height - annotation.y * height;
+    } else if (annotation.rects?.length) {
+      markerX = annotation.rects[0].x * width;
+      markerY = height - annotation.rects[0].y * height;
+    } else {
+      continue;
+    }
+
+    page.drawCircle({
+      x: markerX,
+      y: markerY,
+      size: 8,
+      color: rgb(r, g, b),
+      borderColor: rgb(0.25, 0.25, 0.25),
+      borderWidth: 0.75,
+    });
+    page.drawText(String(marker), {
+      x: markerX - (marker > 9 ? 5 : 2.5),
+      y: markerY - 3.5,
+      size: 8,
       font: bold,
       color: rgb(0.1, 0.1, 0.1),
     });
-    cursorY -= 30;
+  }
 
-    for (const { number, ann } of noteEntries) {
-      if (cursorY < 80) {
-        notesPage = pdfDoc.addPage();
-        ({ width: pw, height: ph } = notesPage.getSize());
-        cursorY = ph - 50;
+  if (numbered.length > 0) {
+    const MARGIN = 50;
+    let page = pdfDoc.addPage();
+    let { width: pw, height: ph } = page.getSize();
+    let y = ph - MARGIN;
+    const maxWidth = pw - MARGIN * 2 - 20;
+
+    const ensureRoom = (needed: number) => {
+      if (y - needed < MARGIN) {
+        page = pdfDoc.addPage();
+        ({ width: pw, height: ph } = page.getSize());
+        y = ph - MARGIN;
       }
+    };
 
-      const { r, g, b } = hexToRgb01(ann.color);
-      notesPage.drawCircle({
-        x: margin + 6,
-        y: cursorY + 3,
-        size: 7,
-        color: rgb(r, g, b),
-      });
-      notesPage.drawText(String(number), {
-        x: margin + (number > 9 ? 2.5 : 4),
-        y: cursorY - 0.5,
+    page.drawText('Comments', { x: MARGIN, y, size: 20, font: bold, color: rgb(0.1, 0.1, 0.1) });
+    y -= 12;
+    page.drawText(`${numbered.length} comment${numbered.length === 1 ? '' : 's'}`, {
+      x: MARGIN,
+      y,
+      size: 9,
+      font,
+      color: rgb(0.45, 0.45, 0.45),
+    });
+    y -= 24;
+
+    for (const annotation of numbered) {
+      const marker = numberOf.get(annotation.id)!;
+      ensureRoom(60);
+
+      const { r, g, b } = hexToRgb01(annotation.color);
+      page.drawCircle({ x: MARGIN + 6, y: y + 3, size: 7, color: rgb(r, g, b) });
+      page.drawText(String(marker), {
+        x: MARGIN + (marker > 9 ? 2.5 : 4),
+        y,
         size: 7,
         font: bold,
-        color: rgb(1, 1, 1),
+        color: rgb(0.1, 0.1, 0.1),
       });
 
-      const header = `Page ${ann.page} — ${ann.author || 'Anonymous'}`;
-      notesPage.drawText(header, {
-        x: margin + 20,
-        y: cursorY,
-        size: 10,
-        font: bold,
-        color: rgb(0.15, 0.15, 0.15),
-      });
-      cursorY -= 14;
+      const header = sanitize(
+        `Page ${annotation.page} - ${annotation.author.name}` +
+          (annotation.resolved ? ' (resolved)' : ''),
+      );
+      page.drawText(header, { x: MARGIN + 20, y, size: 10, font: bold, color: rgb(0.15, 0.15, 0.15) });
 
-      if (ann.quotedText) {
-        const quoteLines = wrapText(`"${ann.quotedText}"`, font, 9, maxWidth - 20);
-        for (const line of quoteLines) {
-          notesPage.drawText(line, {
-            x: margin + 20,
-            y: cursorY,
-            size: 9,
-            font,
-            color: rgb(0.4, 0.4, 0.4),
-          });
-          cursorY -= 12;
+      const stamp = new Date(annotation.createdAt).toLocaleString();
+      const stampWidth = font.widthOfTextAtSize(stamp, 8);
+      page.drawText(stamp, {
+        x: pw - MARGIN - stampWidth,
+        y,
+        size: 8,
+        font,
+        color: rgb(0.55, 0.55, 0.55),
+      });
+      y -= 14;
+
+      if (annotation.quotedText) {
+        for (const line of wrapText(`"${sanitize(annotation.quotedText)}"`, italic, 9, maxWidth)) {
+          ensureRoom(12);
+          page.drawText(line, { x: MARGIN + 20, y, size: 9, font: italic, color: rgb(0.45, 0.45, 0.45) });
+          y -= 12;
         }
       }
 
-      const commentLines = wrapText(ann.comment, font, 10, maxWidth - 20);
-      for (const line of commentLines) {
-        notesPage.drawText(line, {
-          x: margin + 20,
-          y: cursorY,
-          size: 10,
-          font,
-          color: rgb(0, 0, 0),
-        });
-        cursorY -= 13;
+      if (annotation.comment) {
+        for (const line of wrapText(sanitize(annotation.comment), font, 10, maxWidth)) {
+          ensureRoom(13);
+          page.drawText(line, { x: MARGIN + 20, y, size: 10, font, color: rgb(0, 0, 0) });
+          y -= 13;
+        }
       }
-      cursorY -= 10;
+
+      for (const reply of annotation.replies) {
+        ensureRoom(24);
+        y -= 4;
+        const replyHeader = sanitize(
+          `${reply.author.name} - ${new Date(reply.createdAt).toLocaleString()}`,
+        );
+        page.drawText(replyHeader, {
+          x: MARGIN + 36,
+          y,
+          size: 8,
+          font: bold,
+          color: rgb(0.45, 0.45, 0.45),
+        });
+        y -= 11;
+        for (const line of wrapText(sanitize(reply.text), font, 9.5, maxWidth - 16)) {
+          ensureRoom(12);
+          page.drawText(line, { x: MARGIN + 36, y, size: 9.5, font, color: rgb(0.2, 0.2, 0.2) });
+          y -= 12;
+        }
+      }
+
+      y -= 14;
     }
   }
 
