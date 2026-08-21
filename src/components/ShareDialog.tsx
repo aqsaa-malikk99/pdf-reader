@@ -3,11 +3,15 @@ import { useState } from 'react';
 interface Props {
   onShare: () => Promise<string>;
   onClose: () => void;
+  /** When the document is already shared, skip straight to the link screen. */
+  existingLink?: string;
 }
 
-export default function ShareDialog({ onShare, onClose }: Props) {
-  const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
-  const [link, setLink] = useState('');
+export default function ShareDialog({ onShare, onClose, existingLink }: Props) {
+  const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>(
+    existingLink ? 'done' : 'idle',
+  );
+  const [link, setLink] = useState(existingLink ?? '');
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
 

@@ -383,11 +383,9 @@ export default function Viewer({
         <button className="btn btn--ghost btn--sm" onClick={handleExport} disabled={exporting}>
           {exporting ? 'Exporting…' : '⬇ Export'}
         </button>
-        {!shareId && (
-          <button className="btn btn--primary btn--sm" onClick={() => setShareOpen(true)}>
-            Share
-          </button>
-        )}
+        <button className="btn btn--primary btn--sm" onClick={() => setShareOpen(true)}>
+          {shareId ? 'Copy Link' : 'Share'}
+        </button>
 
         <div className="toolbar__user" title={currentUser.email ?? currentUser.name}>
           <Avatar author={toAuthorRef(currentUser)} size={28} />
@@ -447,7 +445,13 @@ export default function Viewer({
         />
       </div>
 
-      {shareOpen && <ShareDialog onShare={handleShare} onClose={() => setShareOpen(false)} />}
+      {shareOpen && (
+        <ShareDialog
+          onShare={handleShare}
+          onClose={() => setShareOpen(false)}
+          existingLink={shareId ? buildShareLink(shareId) : undefined}
+        />
+      )}
     </div>
   );
 }
