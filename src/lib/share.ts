@@ -1,15 +1,6 @@
+import { upload } from '@vercel/blob/client';
 import type { Annotation, ShareRecord } from '../types';
 import { normalizeAnnotations } from './migrate';
-
-function bytesToBase64(bytes: ArrayBuffer): string {
-  const chunkSize = 0x8000;
-  const uint8 = new Uint8Array(bytes);
-  let binary = '';
-  for (let i = 0; i < uint8.length; i += chunkSize) {
-    binary += String.fromCharCode(...uint8.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
-}
 
 function authHeaders(idToken?: string): Record<string, string> {
   return idToken ? { Authorization: `Bearer ${idToken}` } : {};
@@ -39,13 +30,23 @@ export async function createShare(
   annotations: Annotation[],
   idToken?: string,
 ): Promise<{ id: string } & ShareRecord> {
+  const id = crypto.randomUUID();
+
+  // Uploaded directly from the browser to Blob storage — not through this
+  // app's own API — so PDF size is limited by Blob (multi-GB), not by the
+  // ~4.5MB body cap on serverless functions.
+  const blob = await upload(`shares/${id}/document.pdf`, new Blob([pdfBytes], { type: 'application/pdf' }), {
+    access: 'public',
+    handleUploadUrl: '/api/blob-upload',
+  });
+
   const res = await fetch('/api/share', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders(idToken) },
-    body: JSON.stringify({ docName, pdfBase64: bytesToBase64(pdfBytes), annotations }),
+    body: JSON.stringify({ id, docName, pdfUrl: blob.url, annotations }),
   });
   if (!res.ok) {
-    throw new Error(await readError(res, `Share upload failed (${res.status})`));
+    throw new Error(await readError(res, `Share creation failed (${res.status})`));
   }
   const data = await res.json();
   return { id: data.id, ...toShareRecord(data) };

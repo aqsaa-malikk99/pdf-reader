@@ -6,11 +6,13 @@ import { createShare, fetchShare, syncShareAnnotations, buildShareLink } from '.
 import { mergeAnnotations, visibleAnnotations } from '../lib/merge';
 import { colorForUserInDocument } from '../lib/colors';
 import { toAuthorRef } from '../lib/auth';
+import { loadOutline, type OutlineItem } from '../lib/outline';
 import type { Annotation, NormRect, User } from '../types';
 import PdfPage from './PdfPage';
 import Sidebar from './Sidebar';
 import ShareDialog from './ShareDialog';
 import Avatar from './Avatar';
+import PageNav from './PageNav';
 
 const POLL_INTERVAL_MS = 8000;
 
@@ -51,6 +53,9 @@ export default function Viewer({
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
   const [exporting, setExporting] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [navOpen, setNavOpen] = useState(true);
+  const [outline, setOutline] = useState<OutlineItem[]>([]);
+  const [pageInput, setPageInput] = useState<string | null>(null);
 
   const pageContainers = useRef<Map<number, HTMLDivElement>>(new Map());
   const bytesRef = useRef(pdfBytes);
@@ -71,7 +76,11 @@ export default function Viewer({
     (async () => {
       try {
         const doc = await getDocument({ data: pdfBytes.slice(0) }).promise;
-        if (!cancelled) setPdf(doc);
+        if (cancelled) return;
+        setPdf(doc);
+        loadOutline(doc).then((items) => {
+          if (!cancelled) setOutline(items);
+        });
       } catch {
         if (!cancelled) setLoadError('This file could not be opened as a PDF.');
       }
@@ -222,6 +231,20 @@ export default function Viewer({
     updateAnnotation(id, { resolved: !annotation.resolved || undefined });
   }
 
+  function goToPage(page: number) {
+    pageContainers.current.get(page)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setCurrentPage(page);
+  }
+
+  function submitPageInput(e: React.FormEvent) {
+    e.preventDefault();
+    const page = Number(pageInput);
+    if (pdf && Number.isInteger(page) && page >= 1 && page <= pdf.numPages) {
+      goToPage(page);
+    }
+    setPageInput(null);
+  }
+
   function selectAnnotation(id: string | null) {
     setActiveAnnotationId(id);
     if (!id) return;
@@ -287,6 +310,14 @@ export default function Viewer({
         <button className="btn btn--ghost btn--sm" onClick={onBack}>
           ← Library
         </button>
+        <button
+          className={`btn btn--ghost btn--sm ${navOpen ? 'btn--primary' : ''}`}
+          onClick={() => setNavOpen((v) => !v)}
+          title="Toggle pages panel"
+          aria-label="Toggle pages panel"
+        >
+          ☰
+        </button>
         <span className="toolbar__title" title={docName}>
           {docName}
         </span>
@@ -319,11 +350,28 @@ export default function Viewer({
           </button>
         </div>
 
-        {pdf && (
-          <span className="toolbar__pages">
-            Page {currentPage} / {pdf.numPages}
-          </span>
-        )}
+        {pdf &&
+          (pageInput !== null ? (
+            <form className="toolbar__page-form" onSubmit={submitPageInput}>
+              <input
+                autoFocus
+                className="toolbar__page-input"
+                value={pageInput}
+                onChange={(e) => setPageInput(e.target.value.replace(/\D/g, ''))}
+                onBlur={() => setPageInput(null)}
+                inputMode="numeric"
+              />
+              <span>/ {pdf.numPages}</span>
+            </form>
+          ) : (
+            <button
+              className="toolbar__pages"
+              onClick={() => setPageInput(String(currentPage))}
+              title="Go to page"
+            >
+              Page {currentPage} / {pdf.numPages}
+            </button>
+          ))}
 
         <button
           className={`btn btn--sm ${noteMode ? 'btn--primary' : 'btn--ghost'}`}
@@ -350,6 +398,10 @@ export default function Viewer({
       </header>
 
       <div className="viewer__body">
+        {navOpen && pdf && (
+          <PageNav pdf={pdf} outline={outline} currentPage={currentPage} onNavigate={goToPage} />
+        )}
+
         <div className={`viewer__pages ${noteMode ? 'viewer__pages--note-mode' : ''}`}>
           {loadError ? (
             <p className="viewer__error">{loadError}</p>

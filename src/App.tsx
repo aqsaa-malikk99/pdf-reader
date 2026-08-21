@@ -101,6 +101,11 @@ export default function App() {
 
   const handleShareCreated = useCallback((newShareId: string) => {
     setDoc((current) => (current ? { ...current, shareId: newShareId } : current));
+    // Reflect the share in the URL too — otherwise refreshing the creator's own
+    // tab has nothing to reload from (it only exists in React state) and drops
+    // them back to an empty library instead of the now-shared document.
+    setPendingShareId(newShareId);
+    window.history.replaceState(null, '', `${window.location.pathname}#/shared/${newShareId}`);
   }, []);
 
   function goBack() {

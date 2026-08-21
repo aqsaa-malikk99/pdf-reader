@@ -7,7 +7,7 @@ export interface NormRect {
 
 export type AnnotationType = 'highlight' | 'note';
 
-export type AuthProvider = 'google' | 'guest';
+export type AuthProvider = 'google' | 'password' | 'guest';
 
 /** The signed-in person. `id` is stable and drives automatic color assignment. */
 export interface User {

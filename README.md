@@ -33,7 +33,8 @@ notes flow back to you with names and timestamps attached.
 - **Highlights that stay legible** — rendered with multiply blending, so the ink reads as a solid marker instead of a washed-out film over the text.
 - **Comment pins** — drop a note anywhere on a page, not just on text.
 - **Eight-colour palette**, with your colour chosen for you (see below).
-- Zoom, page indicator, and `⌘ +` / `⌘ −` shortcuts.
+- **Page panel** — collapsible sidebar with page thumbnails, jump to any page, plus the PDF's table of contents when it has one.
+- Zoom, click-to-jump page indicator, and `⌘ +` / `⌘ −` shortcuts.
 
 ### Collaboration
 - **Automatic per-person colours** — every contributor in a document gets a *different* highlight colour automatically, so you can tell at a glance whose marks are whose. No one has to pick.
@@ -68,10 +69,12 @@ Open the printed URL (usually `http://localhost:5173`) and sign in.
 
 ### Signing in
 
-You need an identity so comments can be attributed. Two ways:
+You need an identity so comments can be attributed. Sign in with:
 
-- **Continue with a name** — works immediately, entirely offline, no account.
-- **Continue with Google** — appears once you've configured a client ID ([below](#enabling-google-sign-in)), and gives verified identity.
+- **Email + password** — enter your email; if it's new you'll set a password, if it's registered you'll be asked for it. Works out of the box, no external setup.
+- **Google** — appears once you've configured a client ID ([below](#enabling-google-sign-in)), and gives verified identity.
+
+Either way you stay signed in on that device (session persists in `localStorage`) until you sign out.
 
 ---
 
@@ -92,8 +95,9 @@ easy to send to someone without making them sign up. Google sign-in prevents
 someone from *posting under another signed-in person's name*, but it does not
 gate access. Don't share links to material you wouldn't want forwarded.
 
-**Size limit:** shared uploads are capped at ~4 MB by the serverless request
-limit. For larger PDFs, use **Export** and send the file directly.
+**Size:** PDFs upload directly from your browser to Blob storage, not through
+a serverless function body, so there's no meaningful size limit for normal
+documents (tens of MB is fine).
 
 ---
 
@@ -118,9 +122,21 @@ Shared PDFs and comments are stored in Vercel Blob.
 In your project dashboard → **Storage** → **Create Database** → **Blob**, then
 connect it to the project. Vercel sets `BLOB_READ_WRITE_TOKEN` automatically.
 
-### 3. Enabling Google Sign-In
+### 3. Add an auth secret
 
-Optional — skip it and the name-based sign-in is used instead.
+Email/password accounts need a signing secret for session tokens:
+
+```bash
+npx vercel env add AUTH_SECRET production
+npx vercel env add AUTH_SECRET preview
+npx vercel env add AUTH_SECRET development
+```
+
+Use a long random value, e.g. `openssl rand -hex 32`.
+
+### 4. Enabling Google Sign-In (optional)
+
+Skip this and email/password sign-in is used instead.
 
 1. In the [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create an **OAuth 2.0 Client ID** of type *Web application*.
 2. Under **Authorised JavaScript origins**, add your deployed URL (and `http://localhost:5173` for local testing).
@@ -140,11 +156,9 @@ Optional — skip it and the name-based sign-in is used instead.
    npx vercel --prod
    ```
 
-For local development, create a `.env.local`:
-
-```bash
-VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-```
+For local development, run `npx vercel env pull .env.local` to pull down
+whatever you've set above (or create `.env.local` by hand with the same
+variables).
 
 ---
 
@@ -152,22 +166,28 @@ VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 
 ```
 src/
-  components/     UI — Viewer, PdfPage, Sidebar, SignIn, AnnotationPopup
+  components/     UI — Viewer, PdfPage, PageNav, Sidebar, SignIn, AnnotationPopup
   lib/
     pdfjs.ts      PDF.js worker wiring
+    outline.ts    Table-of-contents extraction (pdf.js getOutline)
     exportPdf.ts  Bakes highlights + comment appendix via pdf-lib
     merge.ts      Conflict-free annotation merging  ← unit tested
     colors.ts     Per-document colour assignment    ← unit tested
-    auth.ts       Session handling, Google Identity Services
+    auth.ts       Session handling — Google Identity Services + email/password
+    share.ts      Direct-to-Blob upload, share create/read/sync
     storage.ts    IndexedDB persistence
     migrate.ts    Forward-compatibility for older saved annotations
 api/
-  share/          Create + read/sync share records (Vercel Blob)
-  _auth.ts        Google ID token verification (jose)
+  share/          Create share links; read/sync share records
+  auth/           check-email, signup, login
+  blob-upload.ts  Authorizes direct browser → Blob uploads
+  _auth.ts        Bearer token verification — Google ID tokens + our own session tokens
+  _users.ts       Password hashing (scrypt) and account storage
+  _shareStore.ts  Append-only revision storage for share records (see below)
   _shared.ts      Server-side merge, mirroring lib/merge.ts
 ```
 
-**Stack:** React · TypeScript · Vite · pdfjs-dist · pdf-lib · idb-keyval · Vercel Blob
+**Stack:** React · TypeScript · Vite · pdfjs-dist · pdf-lib · idb-keyval · Vercel Blob · jose
 
 ### How concurrent editing is handled
 
@@ -181,6 +201,26 @@ The naive alternative — whoever saves last replaces the whole list — silentl
 destroys the other person's comments. The merge logic is unit-tested against
 exactly that scenario.
 
+### Why share data is append-only
+
+A share record isn't stored as one file that gets overwritten. Vercel Blob's
+public URLs are served through a CDN that can take anywhere from a few seconds
+to (with default caching) a month to reflect an overwrite at an existing URL —
+which meant a freshly-posted reply could be invisible on refresh. Every edit
+instead writes a brand-new file (`shares/<id>/rev/<timestamp>-<random>.json`);
+reads list that folder and take the newest one. A URL nobody has requested
+before can't be served stale, since there's nothing cached for it yet. Old
+revisions are pruned in the background once they're a minute old.
+
+### Accounts
+
+Email/password accounts are stored in the same Blob store as everything else
+(a second, access-controlled store is more setup than this project asks of
+you). The path is an HMAC of the email keyed by a server-only secret, so a
+record is unguessable without that secret even on a public store, and the
+password itself is scrypt-hashed underneath. Sessions are self-issued JWTs
+signed with the same secret.
+
 ---
 
 ## Privacy
@@ -188,7 +228,8 @@ exactly that scenario.
 - PDFs opened locally stay in your browser (IndexedDB) and are never uploaded.
 - Nothing is transmitted until you press **Share**.
 - Shared documents live in your own Vercel Blob store, under your account.
-- Guest sign-in stores only the name you type, in your browser.
+- Passwords are never stored in plain text (scrypt-hashed) and account
+  records aren't guessable from someone's email alone (see [Accounts](#accounts)).
 
 ---
 

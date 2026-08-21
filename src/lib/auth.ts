@@ -50,6 +50,64 @@ export function createGuestUser(name: string): User {
   };
 }
 
+async function readAuthError(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.json();
+    return body?.error ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export async function checkEmailExists(email: string): Promise<boolean> {
+  const res = await fetch('/api/auth/check-email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) throw new Error(await readAuthError(res, 'Could not check that email.'));
+  const data = await res.json();
+  return Boolean(data.exists);
+}
+
+interface PasswordAuthResult {
+  user: User;
+  token: string;
+}
+
+export async function signUpWithPassword(
+  email: string,
+  password: string,
+  name: string,
+): Promise<PasswordAuthResult> {
+  const res = await fetch('/api/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, name }),
+  });
+  if (!res.ok) throw new Error(await readAuthError(res, 'Could not create your account.'));
+  return toPasswordAuthResult(await res.json());
+}
+
+export async function logInWithPassword(email: string, password: string): Promise<PasswordAuthResult> {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error(await readAuthError(res, 'Could not log you in.'));
+  return toPasswordAuthResult(await res.json());
+}
+
+function toPasswordAuthResult(data: { token: string; user: { email: string; name: string } }): PasswordAuthResult {
+  const claims = decodeJwtPayload(data.token);
+  const id = typeof claims?.sub === 'string' ? claims.sub : `password:${data.user.email}`;
+  return {
+    token: data.token,
+    user: { id, name: data.user.name, email: data.user.email, provider: 'password' },
+  };
+}
+
 export function toAuthorRef(user: User): AuthorRef {
   return {
     id: user.id,

@@ -1,31 +1,7 @@
-import { head, put } from '@vercel/blob';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { verifyRequestIdentity } from '../_auth.js';
-import {
-  isValidShareId,
-  mergeAnnotations,
-  rejectsIdentitySpoofing,
-  sendError,
-  type StoredAnnotation,
-} from '../_shared.js';
-
-interface ShareData {
-  docName: string;
-  pdfUrl: string;
-  annotations: StoredAnnotation[];
-  updatedAt: number;
-}
-
-async function readShare(id: string): Promise<ShareData | null> {
-  try {
-    const meta = await head(`shares/${id}/data.json`);
-    const response = await fetch(meta.url, { cache: 'no-store' });
-    if (!response.ok) return null;
-    return (await response.json()) as ShareData;
-  } catch {
-    return null;
-  }
-}
+import { isValidShareId, mergeAnnotations, rejectsIdentitySpoofing, sendError, type StoredAnnotation } from '../_shared.js';
+import { readShare, writeShareRevision, type ShareData } from '../_shareStore.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const id = req.query.id;
@@ -64,14 +40,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const merged = mergeAnnotations(existing.annotations ?? [], incoming);
     const updated: ShareData = { ...existing, annotations: merged, updatedAt: Date.now() };
-
-    await put(`shares/${id}/data.json`, JSON.stringify(updated), {
-      access: 'public',
-      contentType: 'application/json',
-      addRandomSuffix: false,
-      allowOverwrite: true,
-    });
-
+    await writeShareRevision(id, updated);
     res.status(200).json(updated);
   } catch (err) {
     console.error('share sync failed', err);
