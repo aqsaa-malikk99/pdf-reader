@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { HIGHLIGHT_COLORS } from '../lib/colors';
+import CopyButton from './CopyButton';
 
 const MARGIN = 12;
 
@@ -13,6 +14,8 @@ interface Props {
   onColorChange?: (color: string) => void;
   placeholder?: string;
   requireComment?: boolean;
+  /** The highlighted text this popup is attached to, if any. */
+  quotedText?: string;
 }
 
 export default function AnnotationPopup({
@@ -24,6 +27,7 @@ export default function AnnotationPopup({
   onColorChange,
   placeholder = 'Add a comment (optional)…',
   requireComment = false,
+  quotedText,
 }: Props) {
   const [color, setColor] = useState(initialColor);
   const [comment, setComment] = useState('');
@@ -83,6 +87,12 @@ export default function AnnotationPopup({
           />
         ))}
       </div>
+      {quotedText && (
+        <div className="annotation-popup__quote">
+          <blockquote className="comment__quote">{quotedText}</blockquote>
+          <CopyButton text={quotedText} label="Copy highlighted text" />
+        </div>
+      )}
       <textarea
         autoFocus
         rows={3}
@@ -98,6 +108,7 @@ export default function AnnotationPopup({
       />
       <div className="annotation-popup__actions">
         <span className="annotation-popup__hint">⌘↵ to save</span>
+        {comment.trim() && <CopyButton text={comment} label="Copy comment" />}
         <button type="button" className="btn btn--ghost btn--sm" onClick={onCancel}>
           Cancel
         </button>

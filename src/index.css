@@ -699,6 +699,39 @@ textarea {
   color: var(--text-muted);
 }
 
+.annotation-popup__quote {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.annotation-popup__quote .comment__quote {
+  margin: 0;
+  flex: 1;
+  user-select: text;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.copy-btn:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
 /* ---------------- Page nav (left sidebar) ---------------- */
 .page-nav {
   width: 200px;

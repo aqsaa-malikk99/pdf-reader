@@ -292,6 +292,7 @@ export default function PdfPage({
           y={pending.screenY}
           initialColor={previewColor}
           placeholder="Add a comment to this highlight (optional)…"
+          quotedText={pending.quotedText}
           onCancel={() => setPending(null)}
           onColorChange={setPreviewColor}
           onSave={(color, comment) => {

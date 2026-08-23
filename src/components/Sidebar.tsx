@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { Annotation, User } from '../types';
 import { relativeTime, absoluteTime } from '../lib/time';
 import Avatar from './Avatar';
+import CopyButton from './CopyButton';
 
 type Filter = 'all' | 'open' | 'mine';
 
@@ -226,6 +227,10 @@ export default function Sidebar({
                   </div>
                 ) : (
                   <div className="comment__toolbar" onClick={(e) => e.stopPropagation()}>
+                    <CopyButton
+                      text={[a.quotedText, a.comment].filter(Boolean).join('\n\n')}
+                      label="Copy comment"
+                    />
                     <button
                       className="link-btn"
                       onClick={() => {
