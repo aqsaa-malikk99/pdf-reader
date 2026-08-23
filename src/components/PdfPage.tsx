@@ -31,6 +31,8 @@ interface Props {
   onCreateNote: (page: number, x: number, y: number, color: string, comment: string) => void;
   activeAnnotationId: string | null;
   onSelectAnnotation: (id: string | null) => void;
+  /** Highlights every piece of text the text layer picked up on this page. */
+  scanned?: boolean;
 }
 
 export default function PdfPage({
@@ -45,6 +47,7 @@ export default function PdfPage({
   onCreateNote,
   activeAnnotationId,
   onSelectAnnotation,
+  scanned = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -228,7 +231,7 @@ export default function PdfPage({
       onMouseUp={handleMouseUp}
     >
       <canvas ref={canvasRef} />
-      <div className="textLayer" ref={textLayerRef} />
+      <div className={`textLayer ${scanned ? 'textLayer--scanned' : ''}`} ref={textLayerRef} />
 
       <div className="annotation-layer">
         {highlights.map((a) =>

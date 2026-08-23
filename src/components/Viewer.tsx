@@ -7,6 +7,7 @@ import { mergeAnnotations, visibleAnnotations } from '../lib/merge';
 import { colorForUserInDocument } from '../lib/colors';
 import { toAuthorRef } from '../lib/auth';
 import { loadOutline, type OutlineItem } from '../lib/outline';
+import { scanPageWordCount } from '../lib/textStats';
 import type { Annotation, NormRect, User } from '../types';
 import PdfPage from './PdfPage';
 import Sidebar from './Sidebar';
@@ -56,6 +57,8 @@ export default function Viewer({
   const [navOpen, setNavOpen] = useState(true);
   const [outline, setOutline] = useState<OutlineItem[]>([]);
   const [pageInput, setPageInput] = useState<string | null>(null);
+  const [highlightedPage, setHighlightedPage] = useState<number | null>(null);
+  const [pageWordCount, setPageWordCount] = useState<number | null>(null);
 
   const pageContainers = useRef<Map<number, HTMLDivElement>>(new Map());
   const bytesRef = useRef(pdfBytes);
@@ -123,6 +126,29 @@ export default function Viewer({
     pageContainers.current.forEach((el) => observer.observe(el));
     return () => observer.disconnect();
   }, [pdf]);
+
+  // Live word count for whichever page is on screen, the way MS Word's status
+  // bar tracks the page you're currently on rather than needing a manual scan.
+  useEffect(() => {
+    if (!pdf) return;
+    let cancelled = false;
+    (async () => {
+      const page = await pdf.getPage(currentPage);
+      const count = await scanPageWordCount(page);
+      if (!cancelled) setPageWordCount(count);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pdf, currentPage]);
+
+  // The highlight only ever describes one page; drop it once the reader
+  // scrolls elsewhere so it doesn't linger on a page that's no longer shown.
+  useEffect(() => {
+    if (highlightedPage !== null && highlightedPage !== currentPage) {
+      setHighlightedPage(null);
+    }
+  }, [currentPage, highlightedPage]);
 
   const persist = useCallback(
     async (next: Annotation[]) => {
@@ -272,6 +298,10 @@ export default function Viewer({
     }
   }
 
+  function toggleHighlightScannedText() {
+    setHighlightedPage((prev) => (prev === currentPage ? null : currentPage));
+  }
+
   async function handleShare(): Promise<string> {
     const record = await createShare(docName, bytesRef.current, annotations, idToken);
     // Switch this session into shared mode too, so comments made by whoever
@@ -372,6 +402,11 @@ export default function Viewer({
               Page {currentPage} / {pdf.numPages}
             </button>
           ))}
+        {pdf && pageWordCount !== null && (
+          <span className="toolbar__word-count" title="Word count for this page">
+            {pageWordCount.toLocaleString()} words
+          </span>
+        )}
 
         <button
           className={`btn btn--sm ${noteMode ? 'btn--primary' : 'btn--ghost'}`}
@@ -379,6 +414,14 @@ export default function Viewer({
           title="Click anywhere on the page to leave a comment"
         >
           💬 {noteMode ? 'Click a spot…' : 'Add Comment'}
+        </button>
+        <button
+          className={`btn btn--sm ${highlightedPage === currentPage ? 'btn--primary' : 'btn--ghost'}`}
+          onClick={toggleHighlightScannedText}
+          disabled={!pdf}
+          title="Highlight all the text picked up on this page"
+        >
+          🔍 Scan Text
         </button>
         <button className="btn btn--ghost btn--sm" onClick={handleExport} disabled={exporting}>
           {exporting ? 'Exporting…' : '⬇ Export'}
@@ -425,6 +468,7 @@ export default function Viewer({
                 onCreateNote={createNote}
                 activeAnnotationId={activeAnnotationId}
                 onSelectAnnotation={selectAnnotation}
+                scanned={highlightedPage === n}
               />
             ))
           ) : (

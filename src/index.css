@@ -479,6 +479,13 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
+.toolbar__word-count {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .toolbar__pages {
   font-size: 0.82rem;
   color: var(--text-muted);
@@ -590,6 +597,11 @@ textarea {
 
 .textLayer ::selection {
   background: rgba(37, 99, 235, 0.28);
+}
+
+.textLayer--scanned span {
+  background: rgba(250, 204, 21, 0.45);
+  border-radius: 2px;
 }
 
 .annotation-layer {
