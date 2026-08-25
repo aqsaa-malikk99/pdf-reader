@@ -11,7 +11,8 @@ import {
   setDocumentShareId,
 } from './lib/storage';
 import { clearSession, loadSession, saveSession } from './lib/auth';
-import { fetchShare, parseShareIdFromHash } from './lib/share';
+import { fetchShare, parseShareIdFromHash, syncShareAnnotations } from './lib/share';
+import { mergeAnnotations } from './lib/merge';
 import type { Annotation, User } from './types';
 
 interface OpenDoc {
@@ -55,13 +56,32 @@ export default function App() {
         const bytes = await pdfResponse.arrayBuffer();
         const id = await hashBytes(bytes);
 
+        // Merge with whatever's already local before overwriting it — a
+        // previous session may hold edits that never made it to the server
+        // (a failed sync), and reloading shouldn't silently discard those.
+        const local = await loadAnnotations(id);
+        const merged = mergeAnnotations(local, record.annotations);
+
         // Save locally too, so it shows up in "Recent documents" and can be
         // reopened straight from the library without needing the link again.
         await saveDocument({ id, name: record.docName, bytes, createdAt: Date.now(), shareId: pendingShareId });
-        await saveAnnotations(id, record.annotations);
+        await saveAnnotations(id, merged);
 
         setDoc({ id, name: record.docName, bytes, shareId: pendingShareId });
-        setAnnotations(record.annotations);
+        setAnnotations(merged);
+
+        // Push any locally-held edits the server never received straight back
+        // up, so recovery doesn't depend on the person making another edit.
+        if (local.length > 0) {
+          try {
+            const synced = await syncShareAnnotations(pendingShareId, merged, idToken);
+            const resynced = mergeAnnotations(merged, synced.annotations);
+            await saveAnnotations(id, resynced);
+            setAnnotations(resynced);
+          } catch {
+            // Best-effort — the merged data is already safe locally either way.
+          }
+        }
       } catch (err) {
         setSharedError(err instanceof Error ? err.message : 'Failed to load shared document.');
       } finally {
