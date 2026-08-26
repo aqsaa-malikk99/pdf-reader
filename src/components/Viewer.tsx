@@ -15,7 +15,11 @@ import ShareDialog from './ShareDialog';
 import Avatar from './Avatar';
 import PageNav from './PageNav';
 
-const POLL_INTERVAL_MS = 8000;
+// Each poll costs a Vercel Blob "Advanced Operation" (list()) server-side, and
+// the free-tier quota (2,000/month) is shared across every open tab on every
+// document — 8s was burning through it in hours. 45s keeps collaboration feeling
+// live without paying for it in list() calls.
+const POLL_INTERVAL_MS = 45000;
 
 type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error';
 
